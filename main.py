@@ -1,39 +1,67 @@
 
+import json
+import os
 import requests
-import pandas as pd
 from collections import Counter
 
-def analyze_results(results):
-    """Phân tích tần suất xuất hiện của 45 số."""
-    numbers = []
+URL = (
+    "https://raw.githubusercontent.com/"
+    "vietvudanh/vietlott-data/main/data/power645.jsonl"
+)
 
-    for draw in results:
-        numbers.extend(draw)
+def download_data():
+    print("Dang tai du lieu Mega 6/45...")
 
-    frequency = Counter(numbers)
+    response = requests.get(URL, timeout=60)
+    response.raise_for_status()
 
-    print("THỐNG KÊ MEGA 6/45")
-    print("-" * 30)
+    draws = []
 
-    for number, count in frequency.most_common():
-        print(f"Số {number:02d}: {count} lần")
+    for line in response.text.splitlines():
+        if not line.strip():
+            continue
 
-    return frequency
+        item = json.loads(line)
+        numbers = item["result"]
+
+        if (
+            len(numbers) != 6
+            or len(set(numbers)) != 6
+            or any(n < 1 or n > 45 for n in numbers)
+        ):
+            raise ValueError("Du lieu khong hop le")
+
+        draws.append(item)
+
+    if not draws:
+        raise ValueError("Khong co du lieu")
+
+    os.makedirs("data", exist_ok=True)
+
+    with open("data/mega645.jsonl", "w", encoding="utf-8") as f:
+        for draw in draws:
+            f.write(json.dumps(draw, ensure_ascii=False) + "\n")
+
+    return draws
 
 
-def main():
-    print("AI VIETLOTT 6/45")
-    print("Hệ thống thống kê đã khởi động.")
+def analyze(draws):
+    frequency = Counter()
 
-    # Dữ liệu mẫu để kiểm tra chương trình
-    sample_results = [
-        [1, 8, 15, 22, 31, 44],
-        [3, 8, 17, 22, 35, 42],
-        [1, 12, 17, 25, 31, 40],
-    ]
+    for draw in draws:
+        frequency.update(draw["result"])
 
-    analyze_results(sample_results)
+    print("\n===== AI VIETLOTT 6/45 =====")
+    print("Tong so ky:", len(draws))
+    print("Ky moi nhat:", draws[-1]["id"])
+    print("Ngay quay:", draws[-1]["date"])
+
+    print("\nTOP 10 SO XUAT HIEN NHIEU NHAT:")
+
+    for number, count in frequency.most_common(10):
+        print(f"So {number:02d}: {count} lan")
 
 
 if __name__ == "__main__":
-    main()
+    history = download_data()
+    analyze(history)
