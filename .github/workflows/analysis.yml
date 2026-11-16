@@ -2,21 +2,23 @@
 name: AI Vietlott 645
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
-  workflow_dispatch:
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Download project
+        run: git clone https://github.com/lelamanh1394-sys/AI-Vietlott-645.git .
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Setup Python
+        run: |
+          python3 --version
+          python3 -m pip install requests pandas
 
-      - run: pip install requests pandas
-
-      - run: python main.py
+      - name: Run analysis
+        run: python3 main.py
