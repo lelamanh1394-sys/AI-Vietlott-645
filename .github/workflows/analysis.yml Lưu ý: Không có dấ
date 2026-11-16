@@ -3,9 +3,6 @@ name: AI Vietlott 645
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 jobs:
   analyze:
