@@ -10,8 +10,13 @@ URL = (
     "vietvudanh/vietlott-data/main/data/power645.jsonl"
 )
 
+START_TEST = 200
+RECENT_WINDOW = 100
+RANDOM_TRIALS = 20
+
+
 def download_data():
-    print("DOWNLOADING MEGA 6/45 DATA")
+    print("DANG TAI DU LIEU MEGA 6/45...")
 
     response = requests.get(URL, timeout=60)
     response.raise_for_status()
@@ -22,23 +27,30 @@ def download_data():
         if not line.strip():
             continue
 
-        item = json.loads(line)
-        numbers = item["result"]
+        try:
+            item = json.loads(line)
+            numbers = [int(n) for n in item["result"]]
 
-        if (
-            len(numbers) != 6
-            or len(set(numbers)) != 6
-            or any(n < 1 or n > 45 for n in numbers)
-        ):
+            if (
+                len(numbers) != 6
+                or len(set(numbers)) != 6
+                or any(n < 1 or n > 45 for n in numbers)
+            ):
+                continue
+
+            draws.append({
+                "id": item["id"],
+                "date": item["date"],
+                "result": sorted(numbers)
+            })
+
+        except (ValueError, KeyError, TypeError):
             continue
 
-        draws.append({
-            "id": item["id"],
-            "date": item["date"],
-            "result": sorted(numbers)
-        })
-
     draws.sort(key=lambda x: x["date"])
+
+    if len(draws) <= START_TEST:
+        raise ValueError("Khong du du lieu de kiem nghiem.")
 
     os.makedirs("data", exist_ok=True)
 
@@ -49,60 +61,114 @@ def download_data():
     return draws
 
 
-def score_numbers(history):
-    long_term = Counter()
-    recent = Counter()
+def get_frequency(history):
+    frequency = Counter()
 
     for draw in history:
-        long_term.update(draw["result"])
+        frequency.update(draw["result"])
 
-    for draw in history[-100:]:
-        recent.update(draw["result"])
+    return frequency
+
+
+def predict_full(history):
+    frequency = get_frequency(history)
+    ranked = sorted(
+        range(1, 46),
+        key=lambda n: (-frequency[n], n)
+    )
+    return set(ranked[:6])
+
+
+def predict_recent(history):
+    recent = history[-RECENT_WINDOW:]
+    frequency = get_frequency(recent)
+
+    ranked = sorted(
+        range(1, 46),
+        key=lambda n: (-frequency[n], n)
+    )
+    return set(ranked[:6])
+
+
+def predict_combined(history):
+    long_frequency = get_frequency(history)
+    recent_frequency = get_frequency(history[-RECENT_WINDOW:])
 
     scores = {}
 
     for number in range(1, 46):
-        scores[number] = (
-            0.5 * long_term[number] / len(history)
-            + 0.5 * recent[number] / min(100, len(history))
+        long_rate = long_frequency[number] / len(history)
+        recent_rate = recent_frequency[number] / min(
+            RECENT_WINDOW, len(history)
         )
 
-    return scores
-
-
-def predict(history):
-    scores = score_numbers(history)
+        scores[number] = 0.5 * long_rate + 0.5 * recent_rate
 
     ranked = sorted(
-        scores,
+        range(1, 46),
         key=lambda n: (-scores[n], n)
     )
 
-    return sorted(ranked[:6])
+    return set(ranked[:6])
 
 
-def backtest(draws, start=200, step=1):
-    results = []
+def backtest(draws):
+    methods = {
+        "Tan suat toan lich su": predict_full,
+        "100 ky gan nhat": predict_recent,
+        "Ket hop dai han va ngan han": predict_combined
+    }
 
-    for i in range(start, len(draws), step):
-        prediction = predict(draws[:i])
+    results = {name: [] for name in methods}
+    random_results = []
+
+    rng = random.Random(6452026)
+
+    for i in range(START_TEST, len(draws)):
+        history = draws[:i]
         actual = set(draws[i]["result"])
 
-        hits = len(set(prediction) & actual)
-        results.append(hits)
+        for name, predictor in methods.items():
+            prediction = predictor(history)
+            hits = len(prediction & actual)
+            results[name].append(hits)
 
-    print("\n===== BACKTEST =====")
-    print("So ky kiem nghiem:", len(results))
+        # 20 bo so ngau nhien cho cung mot ky kiem nghiem
+        random_hits = []
 
-    if results:
-        average = sum(results) / len(results)
+        for _ in range(RANDOM_TRIALS):
+            ticket = set(rng.sample(range(1, 46), 6))
+            random_hits.append(len(ticket & actual))
+
+        random_results.extend(random_hits)
+
+    print("\n===== SO SANH 4 PHUONG PHAP =====")
+    print("So ky kiem nghiem:", len(results["100 ky gan nhat"]))
+
+    for name, hits_list in results.items():
+        average = sum(hits_list) / len(hits_list)
+        print(f"\n{name}")
         print(f"So trung binh moi ky: {average:.4f}")
 
-        for hits in range(7):
-            count = results.count(hits)
-            print(f"Trung {hits} so: {count} ky")
+    random_average = sum(random_results) / len(random_results)
 
-        print("Moc chon ngau nhien: 0.8 so/ky")
+    print("\nDoi chung chon ngau nhien")
+    print(f"So trung binh moi bo so: {random_average:.4f}")
+    print("Moc ly thuyet ngau nhien: 0.8000")
+
+    print("\n===== PHAN BO KET QUA =====")
+
+    for name, hits_list in results.items():
+        print(f"\n{name}")
+
+        for count in range(7):
+            print(f"Trung {count} so: {hits_list.count(count)} ky")
+
+    print("\n===== 6 SO THAM KHAO HIEN TAI =====")
+
+    for name, predictor in methods.items():
+        prediction = sorted(predictor(draws))
+        print(name + ": " + " - ".join(f"{n:02d}" for n in prediction))
 
 
 def main():
@@ -113,23 +179,10 @@ def main():
     print("Ky moi nhat:", draws[-1]["id"])
     print("Ngay quay:", draws[-1]["date"])
 
-    print("\n===== TOP 10 TAN SUAT =====")
-
-    frequency = Counter()
-
-    for draw in draws:
-        frequency.update(draw["result"])
-
-    for number, count in frequency.most_common(10):
-        print(f"So {number:02d}: {count} lan")
-
     backtest(draws)
 
-    prediction = predict(draws)
-
-    print("\n===== 6 SO THAM KHAO =====")
-    print(" - ".join(f"{n:02d}" for n in prediction))
-    print("Day so chi mang tinh nghien cuu, khong bao dam trung thuong.")
+    print("\n===== HOAN TAT PHAN TICH =====")
+    print("Ket qua chi phuc vu nghien cuu, khong bao dam trung thuong.")
 
 
 if __name__ == "__main__":
