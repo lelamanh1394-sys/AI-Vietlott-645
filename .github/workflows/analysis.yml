@@ -2,23 +2,21 @@
 name: AI Vietlott 645
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Get project
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install libraries
-        run: pip install requests pandas
+      - run: pip install requests pandas
 
-      - name: Run analysis
-        run: python main.py
+      - run: python main.py
