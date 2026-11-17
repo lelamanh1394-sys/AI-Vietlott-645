@@ -29,5 +29,5 @@ jobs:
         run: |
           python -c "import numpy, pandas, requests; print('ALL LIBRARIES OK')"
 
-      - name: Run Engine A V15
-        run: python engine_a_v15.py
+      - name: Run AI Vietlot V100
+        run: python v100.py
