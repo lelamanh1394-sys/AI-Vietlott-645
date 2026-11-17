@@ -1,325 +1,379 @@
 
-import json
-import math
-import random
 import requests
+import numpy as np
+import pandas as pd
+import random
 from collections import Counter
-from itertools import combinations
 
-URL = (
-    "https://raw.githubusercontent.com/"
-    "vietvudanh/vietlott-data/main/data/power645.jsonl"
-)
+# ==================================================
+# 1. CAU HINH MO HINH
+# ==================================================
 
-# V14.1 configuration
+DATA_URL = "https://raw.githubusercontent.com/lelamanh1394-sys/AI-Vietlott-645/main/data.csv"
+
+NUMBER_MIN = 1
+NUMBER_MAX = 45
+NUMBERS_PER_DRAW = 6
+
 TEST_DRAWS = 300
-MIN_HISTORY = 200
-BACKTEST_CANDIDATES = 3000
-FINAL_CANDIDATES = 12000
-RANDOM_TICKETS_PER_DRAW = 500
-SEED = 645141
+CANDIDATES = 3000
+RANDOM_SEED = 42
 
-P = 6 / 45
-PAIR_P = (6 / 45) * (5 / 44)
+WEIGHT_FREQUENCY = 0.30
+WEIGHT_RECENCY = 0.25
+WEIGHT_GAP = 0.20
+WEIGHT_TRANSITION = 0.25
 
+
+# ==================================================
+# 2. TAI DU LIEU
+# ==================================================
 
 def download_data():
+
     print("DOWNLOADING MEGA 6/45 DATA")
 
-    response = requests.get(URL, timeout=60)
+    response = requests.get(DATA_URL, timeout=30)
     response.raise_for_status()
+
+    from io import StringIO
+
+    df = pd.read_csv(StringIO(response.text))
+
+    print("Total rows:", len(df))
+
+    return df
+
+
+# ==================================================
+# 3. CHUAN HOA DU LIEU
+# ==================================================
+
+def extract_draws(df):
 
     draws = []
 
-    for line in response.text.splitlines():
-        if not line.strip():
-            continue
+    # Dieu chinh ten cot theo file CSV thuc te neu can
+    number_columns = [
+        col for col in df.columns
+        if col.lower().startswith("n")
+    ]
 
-        try:
-            item = json.loads(line)
-            numbers = sorted(int(n) for n in item["result"])
+    if len(number_columns) < 6:
+        raise ValueError("Khong tim thay 6 cot ket qua")
 
-            if (
-                len(numbers) != 6
-                or len(set(numbers)) != 6
-                or any(n < 1 or n > 45 for n in numbers)
-            ):
-                continue
+    for _, row in df.iterrows():
 
-            draws.append({
-                "id": str(item["id"]),
-                "date": str(item["date"]),
-                "result": numbers
-            })
+        numbers = []
 
-        except (ValueError, KeyError, TypeError):
-            continue
+        for col in number_columns[:6]:
 
-    draws.sort(key=lambda x: x["date"])
+            value = int(row[col])
 
-    if len(draws) <= MIN_HISTORY:
-        raise ValueError("Not enough valid historical draws.")
+            if NUMBER_MIN <= value <= NUMBER_MAX:
+                numbers.append(value)
 
-    ids = [d["id"] for d in draws]
-
-    if len(ids) != len(set(ids)):
-        raise ValueError("Duplicate draw IDs detected.")
+        if len(numbers) == 6 and len(set(numbers)) == 6:
+            draws.append(sorted(numbers))
 
     return draws
 
 
-def clamp(value, low=-2.5, high=2.5):
-    return max(low, min(high, value))
+# ==================================================
+# 4. PHAN TICH TAN SUAT
+# ==================================================
 
+def calculate_frequency(history):
 
-def frequency_signal(history, window):
-    data = history[-window:]
-    total = len(data)
-
-    if total == 0:
-        return {n: 0.0 for n in range(1, 46)}
-
-    counts = Counter(
-        n for draw in data for n in draw["result"]
-    )
-
-    result = {}
-
-    for n in range(1, 46):
-        observed = counts[n]
-        expected = total * P
-        variance = total * P * (1 - P)
-
-        z = (observed - expected) / math.sqrt(variance)
-        shrink = total / (total + 100)
-
-        result[n] = clamp(z) * shrink
-
-    return result
-
-
-def transition_signal(history):
-    result = {n: 0.0 for n in range(1, 46)}
-
-    if len(history) < 30:
-        return result
-
-    present = Counter()
-    present_next = Counter()
-
-    for i in range(len(history) - 1):
-        current = set(history[i]["result"])
-        following = set(history[i + 1]["result"])
-
-        for n in range(1, 46):
-            if n in current:
-                present[n] += 1
-                if n in following:
-                    present_next[n] += 1
-
-    total_pairs = len(history) - 1
-
-    for n in range(1, 46):
-        count_yes = present[n]
-        count_no = total_pairs - count_yes
-
-        if count_yes < 10 or count_no < 10:
-            continue
-
-        rate_yes = present_next[n] / count_yes
-        rate_no = (6 * total_pairs / 45 - present_next[n]) / count_no
-
-        # Compare conditional rates with uncertainty adjustment.
-        pooled = P
-        se = math.sqrt(
-            pooled * (1 - pooled)
-            * (1 / count_yes + 1 / count_no)
-        )
-
-        if se > 0:
-            z = (rate_yes - rate_no) / se
-            shrink = total_pairs / (total_pairs + 100)
-            result[n] = clamp(z) * shrink
-
-    return result
-
-
-def pair_signal(history):
-    result = {}
-
-    total = len(history)
-
-    if total < 30:
-        return result
-
-    counts = Counter()
+    counter = Counter()
 
     for draw in history:
-        for a, b in combinations(draw["result"], 2):
-            counts[(a, b)] += 1
+        counter.update(draw)
 
-    for a in range(1, 46):
-        for b in range(a + 1, 46):
-            observed = counts[(a, b)]
-            expected = total * PAIR_P
-            variance = total * PAIR_P * (1 - PAIR_P)
-
-            z = (observed - expected) / math.sqrt(variance)
-            shrink = total / (total + 200)
-
-            result[(a, b)] = clamp(z) * shrink
-
-    return result
-
-
-def build_scores(history):
-    f60 = frequency_signal(history, 60)
-    f180 = frequency_signal(history, 180)
-    f500 = frequency_signal(history, 500)
-    f_all = frequency_signal(history, len(history))
-
-    transition = transition_signal(history)
-    pairs = pair_signal(history)
+    total = max(len(history), 1)
 
     scores = {}
 
-    for n in range(1, 46):
-        scores[n] = (
-            0.20 * f60[n]
-            + 0.20 * f180[n]
-            + 0.20 * f500[n]
-            + 0.15 * f_all[n]
-            + 0.25 * transition[n]
+    for number in range(1, 46):
+        scores[number] = counter[number] / total
+
+    return scores
+
+
+# ==================================================
+# 5. PHAN TICH TAN SUAT GAN DAY
+# ==================================================
+
+def calculate_recency(history, window=100):
+
+    recent = history[-window:]
+
+    counter = Counter()
+
+    for draw in recent:
+        counter.update(draw)
+
+    scores = {}
+
+    for number in range(1, 46):
+        scores[number] = counter[number] / max(len(recent), 1)
+
+    return scores
+
+
+# ==================================================
+# 6. PHAN TICH KHOANG CACH XUAT HIEN
+# ==================================================
+
+def calculate_gap(history):
+
+    scores = {}
+
+    for number in range(1, 46):
+
+        gap = 0
+
+        for draw in reversed(history):
+
+            if number in draw:
+                break
+
+            gap += 1
+
+        scores[number] = gap
+
+    return scores
+
+
+# ==================================================
+# 7. PHAN TICH CHUYEN TIEP
+# ==================================================
+
+def calculate_transition(history):
+
+    counter = Counter()
+
+    for previous, current in zip(history[:-1], history[1:]):
+
+        for number in current:
+            counter[number] += 1
+
+    total = max(len(history) - 1, 1)
+
+    return {
+        number: counter[number] / total
+        for number in range(1, 46)
+    }
+
+
+# ==================================================
+# 8. CHUAN HOA DIEM
+# ==================================================
+
+def normalize(scores):
+
+    values = np.array(list(scores.values()), dtype=float)
+
+    minimum = values.min()
+    maximum = values.max()
+
+    if maximum == minimum:
+        return {key: 0.5 for key in scores}
+
+    return {
+        key: (value - minimum) / (maximum - minimum)
+        for key, value in scores.items()
+    }
+
+
+# ==================================================
+# 9. ENGINE A - CHAM DIEM 45 SO
+# ==================================================
+
+def engine_a(history):
+
+    frequency = calculate_frequency(history)
+    recency = calculate_recency(history)
+    gap = calculate_gap(history)
+    transition = calculate_transition(history)
+
+    frequency = normalize(frequency)
+    recency = normalize(recency)
+    gap = normalize(gap)
+    transition = normalize(transition)
+
+    final_scores = {}
+
+    for number in range(1, 46):
+
+        score = (
+            frequency[number] * WEIGHT_FREQUENCY
+            + recency[number] * WEIGHT_RECENCY
+            + gap[number] * WEIGHT_GAP
+            + transition[number] * WEIGHT_TRANSITION
         )
 
-    return scores, pairs
+        final_scores[number] = score
+
+    return final_scores
 
 
-def score_ticket(ticket, scores, pairs):
-    individual = sum(scores[n] for n in ticket)
+# ==================================================
+# 10. TAO BO SO UNG VIEN
+# ==================================================
 
-    pair_total = 0.0
+def generate_candidates(scores, count=CANDIDATES):
 
-    for a, b in combinations(ticket, 2):
-        pair_total += pairs.get((a, b), 0.0)
+    numbers = list(scores.keys())
 
-    # Pair contribution is deliberately limited.
-    return individual + 0.15 * pair_total
+    probabilities = np.array([
+        scores[number] + 0.0001
+        for number in numbers
+    ])
 
+    probabilities = probabilities / probabilities.sum()
 
-def generate_candidates(history, count, seed):
-    scores, pairs = build_scores(history)
+    candidates = set()
 
-    rng = random.Random(seed)
-    best_ticket = None
-    best_score = float("-inf")
+    while len(candidates) < count:
 
-    seen = set()
-
-    for _ in range(count):
-        ticket = tuple(sorted(rng.sample(range(1, 46), 6)))
-
-        if ticket in seen:
-            continue
-
-        seen.add(ticket)
-
-        value = score_ticket(ticket, scores, pairs)
-
-        if value > best_score:
-            best_score = value
-            best_ticket = ticket
-
-    return list(best_ticket), best_score, scores
-
-
-def backtest(draws):
-    test_start = max(MIN_HISTORY, len(draws) - TEST_DRAWS)
-
-    model_hits = []
-    random_hits = []
-
-    rng = random.Random(SEED)
-
-    print("\n===== V14.1 WALK-FORWARD TEST =====")
-    print("Test draws:", len(draws) - test_start)
-    print("Candidate combinations per draw:", BACKTEST_CANDIDATES)
-
-    for i in range(test_start, len(draws)):
-        history = draws[:i]
-        actual = set(draws[i]["result"])
-
-        prediction, _, _ = generate_candidates(
-            history,
-            BACKTEST_CANDIDATES,
-            SEED + i
+        selected = np.random.choice(
+            numbers,
+            size=6,
+            replace=False,
+            p=probabilities
         )
 
-        hits = len(set(prediction) & actual)
-        model_hits.append(hits)
+        combination = tuple(sorted(selected))
 
-        for _ in range(RANDOM_TICKETS_PER_DRAW):
-            ticket = set(rng.sample(range(1, 46), 6))
-            random_hits.append(len(ticket & actual))
+        candidates.add(combination)
 
-    model_average = sum(model_hits) / len(model_hits)
-    random_average = sum(random_hits) / len(random_hits)
-
-    print("\nV14.1 Engine A")
-    print("Total hits:", sum(model_hits))
-    print("Average hits per draw:", round(model_average, 4))
-
-    print("\nRandom control")
-    print("Average hits per ticket:", round(random_average, 4))
-    print("Theoretical random baseline: 0.8000")
-
-    print("\n===== HIT DISTRIBUTION =====")
-
-    for k in range(7):
-        print(f"{k} hits: {model_hits.count(k)} draws")
-
-    print("\nDifference vs theoretical baseline:",
-          round(model_average - 0.8, 4))
-
-    print("IMPORTANT: This is exploratory testing,")
-    print("not proof of predictive advantage.")
+    return list(candidates)
 
 
-def main():
-    draws = download_data()
+# ==================================================
+# 11. CHON BO SO TOT NHAT
+# ==================================================
 
-    print("\n===== V14.1 DATA =====")
-    print("Total draws:", len(draws))
-    print("Latest draw:", draws[-1]["id"])
-    print("Latest date:", draws[-1]["date"])
-
-    backtest(draws)
-
-    print("\n===== CURRENT ENGINE A CANDIDATE =====")
-
-    ticket, score, scores = generate_candidates(
-        draws,
-        FINAL_CANDIDATES,
-        SEED
-    )
-
-    print("V14.1 candidate:",
-          "-".join(f"{n:02d}" for n in ticket))
-
-    print("Candidate score:", round(score, 5))
+def select_best(scores):
 
     ranked = sorted(
         scores.items(),
-        key=lambda x: (-x[1], x[0])
+        key=lambda item: item[1],
+        reverse=True
     )
 
-    print("\nTop 15 individual scores:")
+    return sorted([
+        number for number, score in ranked[:6]
+    ])
 
-    for number, value in ranked[:15]:
-        print(f"{number:02d}: {value:.5f}")
 
-    print("\nV14.1 ENGINE A COMPLETE")
-    print("Research only. No guaranteed prediction.")
+# ==================================================
+# 12. TINH SO TRUNG
+# ==================================================
+
+def count_matches(prediction, actual):
+
+    return len(set(prediction) & set(actual))
+
+
+# ==================================================
+# 13. BACKTEST WALK-FORWARD
+# ==================================================
+
+def walk_forward_test(draws):
+
+    print("\n===== ENGINE A BACKTEST =====")
+
+    start = max(100, len(draws) - TEST_DRAWS)
+
+    total_matches = 0
+    total_random_matches = 0
+
+    wins = 0
+    ties = 0
+    losses = 0
+
+    random_generator = random.Random(RANDOM_SEED)
+
+    for index in range(start, len(draws)):
+
+        history = draws[:index]
+        actual = draws[index]
+
+        scores = engine_a(history)
+
+        prediction = select_best(scores)
+
+        random_prediction = sorted(
+            random_generator.sample(range(1, 46), 6)
+        )
+
+        model_hits = count_matches(prediction, actual)
+
+        random_hits = count_matches(
+            random_prediction, actual
+        )
+
+        total_matches += model_hits
+        total_random_matches += random_hits
+
+        if model_hits > random_hits:
+            wins += 1
+        elif model_hits == random_hits:
+            ties += 1
+        else:
+            losses += 1
+
+    tested = len(draws) - start
+
+    print("Test draws:", tested)
+    print("Model average:", total_matches / tested)
+    print("Random average:", total_random_matches / tested)
+
+    print("Wins:", wins)
+    print("Ties:", ties)
+    print("Losses:", losses)
+
+
+# ==================================================
+# 14. CHAY MO HINH
+# ==================================================
+
+def main():
+
+    np.random.seed(RANDOM_SEED)
+
+    df = download_data()
+
+    draws = extract_draws(df)
+
+    print("\n===== DATA =====")
+    print("Total draws:", len(draws))
+
+    if not draws:
+        raise ValueError("Du lieu khong hop le")
+
+    print("Latest draw:", draws[-1])
+
+    walk_forward_test(draws)
+
+    scores = engine_a(draws)
+
+    print("\n===== TOP 10 NUMBERS =====")
+
+    ranked = sorted(
+        scores.items(),
+        key=lambda item: item[1],
+        reverse=True
+    )
+
+    for number, score in ranked[:10]:
+        print(f"{number:02d}: {score:.5f}")
+
+    print("\n===== BEST 6 NUMBERS =====")
+
+    print(select_best(scores))
 
 
 if __name__ == "__main__":
