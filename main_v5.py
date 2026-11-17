@@ -435,7 +435,7 @@ def monte_carlo_random(actual_sets):
             )[:, :6] + 1
         )
 
-        totals += mask[tickets].sum(axis=1)
+        totals += np.asarray(mask[tickets].sum(axis=1), dtype=np.int32)
 
     return totals
 
