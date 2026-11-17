@@ -25,5 +25,5 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Run AI V9
-        run: python main_v9.py
+      - name: Run AI V10
+        run: python main_v10.py
