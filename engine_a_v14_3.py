@@ -7,8 +7,8 @@ from collections import Counter
 from itertools import combinations
 
 # ============================================================
-# AUTONOMOUS META-LEARNING ENGINE
-# MEGA 6/45 - VERSION 14.3
+# AI VIETLOTT MEGA 6/45
+# AUTONOMOUS META-LEARNING ENGINE V14.3
 # ============================================================
 
 DATA_URL = (
@@ -18,9 +18,11 @@ DATA_URL = (
 
 TEST_DRAWS = 300
 MIN_HISTORY = 200
+
 PRIOR_STRENGTH = 80
 MIN_LEARNING_SAMPLES = 30
 RECENT_WINDOW = 100
+
 MONTE_CARLO_TICKETS = 100
 RANDOM_SEED = 645143
 
@@ -39,36 +41,50 @@ STRATEGIES = [
 
 
 # ============================================================
-# 1. DATA
+# 1. DOWNLOAD AND VALIDATE DATA
 # ============================================================
 
 def download_data():
+
     print("DOWNLOADING MEGA 6/45 DATA")
 
-    req = urllib.request.Request(
+    request = urllib.request.Request(
         DATA_URL,
-        headers={"User-Agent": "AI-Vietlott-645/14.3"}
+        headers={
+            "User-Agent": "AI-Vietlott-645/14.3"
+        }
     )
 
-    with urllib.request.urlopen(req, timeout=30) as response:
+    with urllib.request.urlopen(
+        request,
+        timeout=30
+    ) as response:
+
         content = response.read().decode("utf-8")
 
     draws = []
     seen = set()
 
     for line in content.splitlines():
+
         try:
             row = json.loads(line)
+
             numbers = row.get("result", [])
 
             if len(numbers) < 6:
                 continue
 
-            numbers = [int(x) for x in numbers[:6]]
+            numbers = [
+                int(x) for x in numbers[:6]
+            ]
 
-            if (
-                len(set(numbers)) != 6
-                or any(n < 1 or n > 45 for n in numbers)
+            if len(set(numbers)) != 6:
+                continue
+
+            if any(
+                n < 1 or n > 45
+                for n in numbers
             ):
                 continue
 
@@ -86,28 +102,37 @@ def download_data():
                 "numbers": sorted(numbers)
             })
 
-        except (ValueError, TypeError, KeyError):
+        except (
+            ValueError,
+            TypeError,
+            KeyError
+        ):
             continue
 
-    draws.sort(key=lambda x: (x["date"], x["id"]))
+    draws.sort(
+        key=lambda x: (x["date"], x["id"])
+    )
 
     if len(draws) < MIN_HISTORY + 50:
         raise ValueError(
-            f"Insufficient valid data: {len(draws)}"
+            "Insufficient valid data: "
+            + str(len(draws))
         )
 
     return draws
 
 
 # ============================================================
-# 2. STATISTICS
+# 2. STATISTICAL FUNCTIONS
 # ============================================================
 
 def z_scores(values):
+
     mean = sum(values) / len(values)
 
     variance = sum(
-        (x - mean) ** 2 for x in values
+        (x - mean) ** 2
+        for x in values
     ) / len(values)
 
     sd = math.sqrt(variance)
@@ -116,55 +141,84 @@ def z_scores(values):
         return [0.0] * len(values)
 
     return [
-        (x - mean) / sd for x in values
+        (x - mean) / sd
+        for x in values
     ]
 
 
 def frequency_scores(history, window):
-    sample = history[-window:] if window else history
+
+    if window:
+        sample = history[-window:]
+    else:
+        sample = history
+
     counts = Counter()
 
     for draw in sample:
         counts.update(draw)
 
-    return z_scores([
-        counts[n] for n in range(1, 46)
-    ])
+    values = [
+        counts[n]
+        for n in range(1, 46)
+    ]
+
+    return z_scores(values)
 
 
 def overdue_scores(history):
+
     gaps = []
 
     for number in range(1, 46):
+
         gap = 0
 
         for draw in reversed(history):
+
             if number in draw:
                 break
+
             gap += 1
 
-        gaps.append(math.log1p(gap))
+        gaps.append(
+            math.log1p(gap)
+        )
 
     return z_scores(gaps)
 
 
 def pair_statistics(history):
+
     counts = Counter()
 
     for draw in history:
-        for pair in combinations(draw, 2):
-            counts[tuple(sorted(pair))] += 1
+
+        for pair in combinations(
+            sorted(draw), 2
+        ):
+
+            counts[pair] += 1
 
     return counts
 
 
-def pair_signal(pair_counts, history_length, a, b):
+def pair_signal(
+    pair_counts,
+    history_length,
+    number_a,
+    number_b
+):
+
     expected = (6 / 45) * (5 / 44)
+
     prior = 20
 
-    observed = pair_counts[
-        tuple(sorted((a, b)))
-    ]
+    key = tuple(
+        sorted((number_a, number_b))
+    )
+
+    observed = pair_counts[key]
 
     probability = (
         observed + prior * expected
@@ -174,19 +228,24 @@ def pair_signal(pair_counts, history_length, a, b):
 
     return max(
         -1.0,
-        min(3.0, probability / expected - 1.0)
+        min(
+            3.0,
+            probability / expected - 1.0
+        )
     )
 
 
 # ============================================================
-# 3. STRATEGY SCORE MAPS
+# 3. BUILD ALL STRATEGY SCORE MAPS
 # ============================================================
 
 def build_score_maps(history):
+
     f60 = frequency_scores(history, 60)
     f180 = frequency_scores(history, 180)
     f500 = frequency_scores(history, 500)
     fall = frequency_scores(history, 0)
+
     overdue = overdue_scores(history)
 
     hybrid = [
@@ -210,6 +269,16 @@ def build_score_maps(history):
         for i in range(45)
     ]
 
+    # IMPORTANT:
+    # The pair strategy must exist in this dictionary.
+    # This fixes the V14.3 KeyError: 'pair'.
+
+    pair = [
+        0.70 * hybrid[i]
+        + 0.30 * overdue[i]
+        for i in range(45)
+    ]
+
     return {
         "freq60": f60,
         "freq180": f180,
@@ -217,13 +286,14 @@ def build_score_maps(history):
         "freq_all": fall,
         "overdue": overdue,
         "hybrid": hybrid,
+        "pair": pair,
         "balanced": balanced,
         "trend": trend,
     }
 
 
 # ============================================================
-# 4. COMBINATION GENERATOR
+# 4. GENERATE SIX-NUMBER COMBINATIONS
 # ============================================================
 
 def greedy_selection(
@@ -233,20 +303,25 @@ def greedy_selection(
     pair_weight,
     seed
 ):
+
     rng = random.Random(seed)
+
     selected = []
 
     while len(selected) < 6:
+
         best_number = None
         best_score = float("-inf")
 
         for number in range(1, 46):
+
             if number in selected:
                 continue
 
             value = scores[number - 1]
 
             if selected:
+
                 synergy = sum(
                     pair_signal(
                         pair_counts,
@@ -259,9 +334,11 @@ def greedy_selection(
 
                 value += pair_weight * synergy
 
+            # Deterministic tiny tie-breaker
             value += rng.random() * 0.000001
 
             if value > best_score:
+
                 best_score = value
                 best_number = number
 
@@ -270,42 +347,61 @@ def greedy_selection(
     return sorted(selected)
 
 
+# ============================================================
+# 5. CREATE TEN INDEPENDENT STRATEGIES
+# ============================================================
+
 def create_candidates(history, draw_index):
+
     maps = build_score_maps(history)
+
     pairs = pair_statistics(history)
 
     candidates = {}
 
     for name in STRATEGIES:
+
         if name == "random":
+
             rng = random.Random(
-                RANDOM_SEED + draw_index * 1009
+                RANDOM_SEED
+                + draw_index * 1009
             )
 
             candidates[name] = sorted(
-                rng.sample(range(1, 46), 6)
+                rng.sample(
+                    range(1, 46), 6
+                )
             )
+
             continue
 
-        weight = 0.25 if name == "pair" else 0.08
+        pair_weight = (
+            0.25 if name == "pair"
+            else 0.08
+        )
 
         candidates[name] = greedy_selection(
             maps[name],
             pairs,
             len(history),
-            weight,
-            RANDOM_SEED + draw_index * 101 + len(name)
+            pair_weight,
+            RANDOM_SEED
+            + draw_index * 101
+            + len(name)
         )
 
     return candidates, maps
 
 
 # ============================================================
-# 5. META-LEARNING
+# 6. META-LEARNING AND STRATEGY EVALUATION
 # ============================================================
 
 def posterior_average(results):
+
     count = len(results)
+
     total = sum(results)
 
     return (
@@ -316,26 +412,35 @@ def posterior_average(results):
 
 
 def strategy_utility(results):
+
     if len(results) < MIN_LEARNING_SAMPLES:
         return float("-inf")
 
-    all_score = posterior_average(results)
+    all_score = posterior_average(
+        results
+    )
 
     recent = results[-RECENT_WINDOW:]
-    recent_score = posterior_average(recent)
+
+    recent_score = posterior_average(
+        recent
+    )
 
     mean = sum(recent) / len(recent)
 
     variance = sum(
-        (x - mean) ** 2 for x in recent
+        (x - mean) ** 2
+        for x in recent
     ) / len(recent)
 
     standard_error = math.sqrt(
         variance / len(recent)
     )
 
-    # Recent performance + long-term stability
-    # Penalize uncertainty instead of rewarding lucky spikes
+    # Long-term performance
+    # + recent performance
+    # - uncertainty penalty
+
     utility = (
         0.60 * recent_score
         + 0.40 * all_score
@@ -346,28 +451,44 @@ def strategy_utility(results):
 
 
 def choose_strategy(performance):
+
     ranked = []
 
     for name in STRATEGIES:
-        utility = strategy_utility(performance[name])
 
-        if utility != float("-inf"):
-            ranked.append((utility, name))
+        utility = strategy_utility(
+            performance[name]
+        )
+
+        if math.isfinite(utility):
+
+            ranked.append(
+                (utility, name)
+            )
 
     if not ranked:
         return "hybrid"
 
-    ranked.sort(reverse=True)
+    ranked.sort(
+        key=lambda item: (
+            item[0],
+            item[1]
+        ),
+        reverse=True
+    )
 
     return ranked[0][1]
 
 
 # ============================================================
-# 6. EVALUATION
+# 7. HIT CALCULATION
 # ============================================================
 
 def count_hits(ticket, actual):
-    return len(set(ticket) & set(actual))
+
+    return len(
+        set(ticket) & set(actual)
+    )
 
 
 def update_performance(
@@ -375,16 +496,25 @@ def update_performance(
     actual,
     performance
 ):
+
     for name in STRATEGIES:
+
         hits = count_hits(
             candidates[name],
             actual
         )
 
-        performance[name].append(hits)
+        performance[name].append(
+            hits
+        )
 
+
+# ============================================================
+# 8. RANDOM BENCHMARK
+# ============================================================
 
 def make_random_ticket(seed):
+
     rng = random.Random(seed)
 
     return sorted(
@@ -392,37 +522,60 @@ def make_random_ticket(seed):
     )
 
 
-def monte_carlo_average(actual, seed):
+def monte_carlo_average(
+    actual,
+    seed
+):
+
     total = 0
 
-    for i in range(MONTE_CARLO_TICKETS):
+    for i in range(
+        MONTE_CARLO_TICKETS
+    ):
+
         ticket = make_random_ticket(
             seed + i * 7919
         )
 
-        total += count_hits(ticket, actual)
+        total += count_hits(
+            ticket,
+            actual
+        )
 
-    return total / MONTE_CARLO_TICKETS
+    return (
+        total / MONTE_CARLO_TICKETS
+    )
 
 
 # ============================================================
-# 7. WALK-FORWARD TRAINING AND TESTING
+# 9. WALK-FORWARD META-LEARNING
 # ============================================================
 
 def run_backtest(draws):
+
     start = max(
         MIN_HISTORY,
         len(draws) - TEST_DRAWS
     )
 
     performance = {
-        name: [] for name in STRATEGIES
+        name: []
+        for name in STRATEGIES
     }
 
-    # Warm-up: learn only from draws before test period
-    print("\n===== META-LEARNING WARM-UP =====")
+    # --------------------------------------------------------
+    # WARM-UP
+    # --------------------------------------------------------
 
-    for index in range(MIN_HISTORY, start):
+    print(
+        "\n===== META-LEARNING WARM-UP ====="
+    )
+
+    for index in range(
+        MIN_HISTORY,
+        start
+    ):
+
         history = [
             item["numbers"]
             for item in draws[:index]
@@ -441,17 +594,30 @@ def run_backtest(draws):
             performance
         )
 
-    print("Warm-up draws:", start - MIN_HISTORY)
+    print(
+        "Warm-up draws:",
+        start - MIN_HISTORY
+    )
 
-    # Online walk-forward test
+    # --------------------------------------------------------
+    # TEST
+    # --------------------------------------------------------
+
+    print(
+        "\n===== V14.3 WALK-FORWARD TEST ====="
+    )
+
     model_hits = []
-    paired_random_hits = []
+    random_hits = []
     monte_carlo_hits = []
+
     chosen_strategies = []
 
-    print("\n===== V14.3 WALK-FORWARD TEST =====")
+    for index in range(
+        start,
+        len(draws)
+    ):
 
-    for index in range(start, len(draws)):
         history = [
             item["numbers"]
             for item in draws[:index]
@@ -459,8 +625,11 @@ def run_backtest(draws):
 
         actual = draws[index]["numbers"]
 
-        # AI chooses BEFORE seeing current result
-        chosen = choose_strategy(performance)
+        # AI makes decision before seeing actual result
+
+        chosen = choose_strategy(
+            performance
+        )
 
         candidates, _ = create_candidates(
             history,
@@ -469,7 +638,7 @@ def run_backtest(draws):
 
         model_ticket = candidates[chosen]
 
-        paired_random = make_random_ticket(
+        random_ticket = make_random_ticket(
             RANDOM_SEED + index * 3571
         )
 
@@ -479,7 +648,7 @@ def run_backtest(draws):
         )
 
         random_result = count_hits(
-            paired_random,
+            random_ticket,
             actual
         )
 
@@ -489,11 +658,15 @@ def run_backtest(draws):
         )
 
         model_hits.append(model_result)
-        paired_random_hits.append(random_result)
+
+        random_hits.append(random_result)
+
         monte_carlo_hits.append(mc_result)
+
         chosen_strategies.append(chosen)
 
-        # Current outcome is revealed only AFTER decision
+        # Update all strategy records AFTER result is known
+
         update_performance(
             candidates,
             actual,
@@ -503,7 +676,7 @@ def run_backtest(draws):
     return (
         performance,
         model_hits,
-        paired_random_hits,
+        random_hits,
         monte_carlo_hits,
         chosen_strategies,
         start
@@ -511,12 +684,17 @@ def run_backtest(draws):
 
 
 # ============================================================
-# 8. FINAL AUTONOMOUS DECISION
+# 10. FINAL AUTONOMOUS DECISION
 # ============================================================
 
-def final_decision(draws, performance):
+def final_decision(
+    draws,
+    performance
+):
+
     history = [
-        item["numbers"] for item in draws
+        item["numbers"]
+        for item in draws
     ]
 
     index = len(draws)
@@ -536,7 +714,10 @@ def final_decision(draws, performance):
 
     top_numbers = sorted(
         range(1, 46),
-        key=lambda n: maps["hybrid"][n - 1],
+        key=lambda n: (
+            maps["hybrid"][n - 1],
+            -n
+        ),
         reverse=True
     )
 
@@ -549,16 +730,29 @@ def final_decision(draws, performance):
 
 
 # ============================================================
-# 9. MAIN REPORT
+# 11. MAIN REPORT
 # ============================================================
 
 def main():
+
     draws = download_data()
 
     print("\n===== V14.3 DATA =====")
-    print("Total draws:", len(draws))
-    print("Latest draw:", draws[-1]["id"])
-    print("Latest date:", draws[-1]["date"])
+
+    print(
+        "Total draws:",
+        len(draws)
+    )
+
+    print(
+        "Latest draw:",
+        draws[-1]["id"]
+    )
+
+    print(
+        "Latest date:",
+        draws[-1]["date"]
+    )
 
     (
         performance,
@@ -571,54 +765,120 @@ def main():
 
     total = len(model_hits)
 
-    model_average = sum(model_hits) / total
-    random_average = sum(random_hits) / total
-    mc_average = sum(mc_hits) / total
+    if total == 0:
+        raise ValueError(
+            "No test draws available."
+        )
+
+    model_average = (
+        sum(model_hits) / total
+    )
+
+    random_average = (
+        sum(random_hits) / total
+    )
+
+    mc_average = (
+        sum(mc_hits) / total
+    )
 
     wins = sum(
-        m > r for m, r in zip(model_hits, random_hits)
+        m > r
+        for m, r in zip(
+            model_hits,
+            random_hits
+        )
     )
 
     ties = sum(
-        m == r for m, r in zip(model_hits, random_hits)
+        m == r
+        for m, r in zip(
+            model_hits,
+            random_hits
+        )
     )
 
     losses = sum(
-        m < r for m, r in zip(model_hits, random_hits)
+        m < r
+        for m, r in zip(
+            model_hits,
+            random_hits
+        )
     )
 
-    print("\n===== AUTONOMOUS BACKTEST =====")
-    print("Test draws:", total)
-    print(f"Model average: {model_average:.5f}")
-    print(f"Paired random average: {random_average:.5f}")
-    print(f"Monte Carlo random average: {mc_average:.5f}")
-    print("Theoretical baseline: 0.80000")
+    # --------------------------------------------------------
+    # BACKTEST REPORT
+    # --------------------------------------------------------
 
-    print("\n===== PAIRED COMPARISON =====")
+    print(
+        "\n===== AUTONOMOUS BACKTEST ====="
+    )
+
+    print(
+        "Test draws:",
+        total
+    )
+
+    print(
+        f"Model average: {model_average:.5f}"
+    )
+
+    print(
+        f"Paired random average: {random_average:.5f}"
+    )
+
+    print(
+        f"Monte Carlo random average: {mc_average:.5f}"
+    )
+
+    print(
+        "Theoretical baseline: 0.80000"
+    )
+
+    print(
+        "\n===== PAIRED COMPARISON ====="
+    )
+
     print("Model wins:", wins)
     print("Model ties:", ties)
     print("Model losses:", losses)
+
     print(
-        f"Model vs paired random: "
+        "Difference:",
         f"{model_average - random_average:+.5f}"
     )
 
-    print("\n===== STRATEGY PERFORMANCE =====")
+    # --------------------------------------------------------
+    # STRATEGY REPORT
+    # --------------------------------------------------------
+
+    print(
+        "\n===== STRATEGY PERFORMANCE ====="
+    )
 
     ranking = sorted(
         STRATEGIES,
-        key=lambda name: strategy_utility(
-            performance[name]
+        key=lambda name: (
+            strategy_utility(
+                performance[name]
+            ),
+            name
         ),
         reverse=True
     )
 
     for name in ranking:
+
         values = performance[name]
 
-        average = sum(values) / len(values)
+        average = (
+            sum(values) / len(values)
+            if values else 0
+        )
 
-        utility = strategy_utility(values)
+        utility = strategy_utility(
+            values
+        )
 
         print(
             f"{name:10s} | "
@@ -627,63 +887,112 @@ def main():
             f"Samples: {len(values)}"
         )
 
-    print("\n===== STRATEGY SELECTION HISTORY =====")
+    # --------------------------------------------------------
+    # STRATEGY SELECTION HISTORY
+    # --------------------------------------------------------
+
+    print(
+        "\n===== STRATEGY SELECTION HISTORY ====="
+    )
 
     strategy_counts = Counter(chosen)
 
-    for name, count in strategy_counts.most_common():
+    for name, count in (
+        strategy_counts.most_common()
+    ):
+
         print(
-            f"{name:10s}: {count} times "
+            f"{name:10s}: "
+            f"{count} times "
             f"({count / total * 100:.1f}%)"
         )
+
+    # --------------------------------------------------------
+    # FINAL AI DECISION
+    # --------------------------------------------------------
 
     (
         selected_strategy,
         ticket,
         top_numbers,
         candidates
-    ) = final_decision(draws, performance)
+    ) = final_decision(
+        draws,
+        performance
+    )
 
-    print("\n===== AUTONOMOUS FINAL DECISION =====")
-    print("Selected strategy:", selected_strategy)
+    print(
+        "\n===== AUTONOMOUS FINAL DECISION ====="
+    )
+
+    print(
+        "Selected strategy:",
+        selected_strategy
+    )
 
     print(
         "Final numbers:",
-        "-".join(f"{n:02d}" for n in ticket)
+        "-".join(
+            f"{n:02d}"
+            for n in ticket
+        )
     )
 
-    print("\n===== ALL STRATEGY CANDIDATES =====")
+    print(
+        "\n===== ALL STRATEGY CANDIDATES ====="
+    )
 
     for name in ranking:
+
         print(
             f"{name:10s}: "
             + "-".join(
-                f"{n:02d}" for n in candidates[name]
+                f"{n:02d}"
+                for n in candidates[name]
             )
         )
 
-    print("\n===== TOP 15 HYBRID NUMBERS =====")
+    print(
+        "\n===== TOP 15 HYBRID NUMBERS ====="
+    )
 
     print(
         ", ".join(
-            f"{n:02d}" for n in top_numbers[:15]
+            f"{n:02d}"
+            for n in top_numbers[:15]
         )
     )
 
-    print("\n===== DECISION STATUS =====")
-
-    if model_average > mc_average:
-        print("Above Monte Carlo random average.")
-    else:
-        print("Not above Monte Carlo random average.")
+    # --------------------------------------------------------
+    # FINAL STATUS
+    # --------------------------------------------------------
 
     print(
-        "Historical performance is not proof "
-        "of future prediction advantage."
+        "\n===== DECISION STATUS ====="
     )
 
-    print("\nENGINE A V14.3 COMPLETE")
+    if model_average > mc_average:
+
+        print(
+            "Above Monte Carlo random average."
+        )
+
+    else:
+
+        print(
+            "Not above Monte Carlo random average."
+        )
+
+    print(
+        "Historical results do not prove "
+        "future prediction advantage."
+    )
+
+    print(
+        "\nENGINE A V14.3 COMPLETE"
+    )
 
 
 if __name__ == "__main__":
+
     main()
