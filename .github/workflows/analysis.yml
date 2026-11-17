@@ -1,5 +1,5 @@
 
-name: AI Vietlott 645 V3
+name: AI Vietlott 645
 
 on:
   workflow_dispatch:
@@ -13,17 +13,21 @@ jobs:
 
     steps:
       - name: Download project
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt
+          pip install numpy pandas requests
 
-      - name: Run V14.1 Engine A
+      - name: Check dependencies
+        run: |
+          python -c "import numpy, pandas, requests; print('ALL LIBRARIES OK')"
+
+      - name: Run Engine A V14
         run: python engine_a_v14.py
