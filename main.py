@@ -4,6 +4,7 @@ import os
 import random
 import requests
 from collections import Counter
+from statistics import mean, stdev
 
 URL = (
     "https://raw.githubusercontent.com/"
@@ -11,22 +12,21 @@ URL = (
 )
 
 START_TEST = 200
-RECENT_WINDOW = 100
+WINDOWS = [30, 50, 100, 200]
 RANDOM_TRIALS = 20
+RNG_SEED = 6452026
 
 
 def download_data():
-    print("DANG TAI DU LIEU MEGA 6/45...")
+    print("DOWNLOADING MEGA 6/45 DATA")
 
     response = requests.get(URL, timeout=60)
     response.raise_for_status()
 
     draws = []
+    seen = set()
 
     for line in response.text.splitlines():
-        if not line.strip():
-            continue
-
         try:
             item = json.loads(line)
             numbers = [int(n) for n in item["result"]]
@@ -38,8 +38,15 @@ def download_data():
             ):
                 continue
 
+            draw_id = str(item["id"])
+
+            if draw_id in seen:
+                continue
+
+            seen.add(draw_id)
+
             draws.append({
-                "id": item["id"],
+                "id": draw_id,
                 "date": item["date"],
                 "result": sorted(numbers)
             })
@@ -47,142 +54,152 @@ def download_data():
         except (ValueError, KeyError, TypeError):
             continue
 
-    draws.sort(key=lambda x: x["date"])
+    draws.sort(key=lambda x: (x["date"], x["id"]))
 
     if len(draws) <= START_TEST:
-        raise ValueError("Khong du du lieu de kiem nghiem.")
+        raise ValueError("Insufficient historical data")
 
     os.makedirs("data", exist_ok=True)
 
-    with open("data/mega645.jsonl", "w", encoding="utf-8") as f:
+    with open("data/mega645.jsonl", "w") as f:
         for draw in draws:
-            f.write(json.dumps(draw, ensure_ascii=False) + "\n")
+            f.write(json.dumps(draw) + "\n")
 
     return draws
 
 
-def get_frequency(history):
-    frequency = Counter()
+def frequency(history):
+    counts = Counter()
 
     for draw in history:
-        frequency.update(draw["result"])
+        counts.update(draw["result"])
 
-    return frequency
-
-
-def predict_full(history):
-    frequency = get_frequency(history)
-    ranked = sorted(
-        range(1, 46),
-        key=lambda n: (-frequency[n], n)
-    )
-    return set(ranked[:6])
+    return counts
 
 
-def predict_recent(history):
-    recent = history[-RECENT_WINDOW:]
-    frequency = get_frequency(recent)
-
-    ranked = sorted(
-        range(1, 46),
-        key=lambda n: (-frequency[n], n)
-    )
-    return set(ranked[:6])
-
-
-def predict_combined(history):
-    long_frequency = get_frequency(history)
-    recent_frequency = get_frequency(history[-RECENT_WINDOW:])
-
-    scores = {}
-
-    for number in range(1, 46):
-        long_rate = long_frequency[number] / len(history)
-        recent_rate = recent_frequency[number] / min(
-            RECENT_WINDOW, len(history)
-        )
-
-        scores[number] = 0.5 * long_rate + 0.5 * recent_rate
-
-    ranked = sorted(
+def rank_scores(scores):
+    return sorted(
         range(1, 46),
         key=lambda n: (-scores[n], n)
     )
 
-    return set(ranked[:6])
+
+def predict_window(history, window):
+    sample = history[-window:]
+    counts = frequency(sample)
+
+    scores = {
+        n: counts[n] / len(sample)
+        for n in range(1, 46)
+    }
+
+    return set(rank_scores(scores)[:6])
+
+
+def predict_ensemble(history):
+    weights = {
+        "long": 0.25,
+        30: 0.15,
+        50: 0.15,
+        100: 0.25,
+        200: 0.20
+    }
+
+    scores = {n: 0.0 for n in range(1, 46)}
+
+    long_counts = frequency(history)
+
+    for n in range(1, 46):
+        scores[n] += (
+            weights["long"]
+            * long_counts[n] / len(history)
+        )
+
+    for window in WINDOWS:
+        sample = history[-window:]
+        counts = frequency(sample)
+
+        for n in range(1, 46):
+            scores[n] += (
+                weights[window]
+                * counts[n] / len(sample)
+            )
+
+    return set(rank_scores(scores)[:6])
 
 
 def backtest(draws):
     methods = {
-        "Tan suat toan lich su": predict_full,
-        "100 ky gan nhat": predict_recent,
-        "Ket hop dai han va ngan han": predict_combined
+        "30 ky": lambda h: predict_window(h, 30),
+        "50 ky": lambda h: predict_window(h, 50),
+        "100 ky": lambda h: predict_window(h, 100),
+        "200 ky": lambda h: predict_window(h, 200),
+        "ENSEMBLE V2": predict_ensemble
     }
 
     results = {name: [] for name in methods}
     random_results = []
 
-    rng = random.Random(6452026)
+    rng = random.Random(RNG_SEED)
 
     for i in range(START_TEST, len(draws)):
         history = draws[:i]
         actual = set(draws[i]["result"])
 
         for name, predictor in methods.items():
-            prediction = predictor(history)
-            hits = len(prediction & actual)
-            results[name].append(hits)
-
-        # 20 bo so ngau nhien cho cung mot ky kiem nghiem
-        random_hits = []
+            predicted = predictor(history)
+            results[name].append(
+                len(predicted & actual)
+            )
 
         for _ in range(RANDOM_TRIALS):
             ticket = set(rng.sample(range(1, 46), 6))
-            random_hits.append(len(ticket & actual))
+            random_results.append(
+                len(ticket & actual)
+            )
 
-        random_results.extend(random_hits)
+    print("\n===== V2 BACKTEST =====")
+    print("Test draws:", len(results["ENSEMBLE V2"]))
 
-    print("\n===== SO SANH 4 PHUONG PHAP =====")
-    print("So ky kiem nghiem:", len(results["100 ky gan nhat"]))
+    baseline = mean(random_results)
 
-    for name, hits_list in results.items():
-        average = sum(hits_list) / len(hits_list)
-        print(f"\n{name}")
-        print(f"So trung binh moi ky: {average:.4f}")
+    print(f"Random baseline: {baseline:.4f}")
+    print("Theoretical baseline: 0.8000")
 
-    random_average = sum(random_results) / len(random_results)
+    for name, hits in results.items():
+        avg = mean(hits)
+        sd = stdev(hits) if len(hits) > 1 else 0
 
-    print("\nDoi chung chon ngau nhien")
-    print(f"So trung binh moi bo so: {random_average:.4f}")
-    print("Moc ly thuyet ngau nhien: 0.8000")
+        print("\n", name)
+        print(f"Average hits: {avg:.4f}")
+        print(f"Standard deviation: {sd:.4f}")
+        print(f"Difference vs random: {avg-baseline:+.4f}")
 
-    print("\n===== PHAN BO KET QUA =====")
+        for k in range(7):
+            print(f"Hits {k}: {hits.count(k)}")
 
-    for name, hits_list in results.items():
-        print(f"\n{name}")
-
-        for count in range(7):
-            print(f"Trung {count} so: {hits_list.count(count)} ky")
-
-    print("\n===== 6 SO THAM KHAO HIEN TAI =====")
+    print("\n===== CURRENT PREDICTIONS =====")
 
     for name, predictor in methods.items():
-        prediction = sorted(predictor(draws))
-        print(name + ": " + " - ".join(f"{n:02d}" for n in prediction))
+        numbers = sorted(predictor(draws))
+        print(name, ":", " - ".join(
+            f"{n:02d}" for n in numbers
+        ))
+
+    print("\n===== V2 COMPLETE =====")
 
 
 def main():
     draws = download_data()
 
-    print("\n===== DU LIEU MEGA 6/45 =====")
-    print("Tong so ky:", len(draws))
-    print("Ky moi nhat:", draws[-1]["id"])
-    print("Ngay quay:", draws[-1]["date"])
+    print("\n===== DATA =====")
+    print("Total draws:", len(draws))
+    print("Latest draw:", draws[-1]["id"])
+    print("Latest date:", draws[-1]["date"])
 
     backtest(draws)
 
-    print("\n===== HOAN TAT PHAN TICH =====")
-    print("Ket qua chi phuc vu nghien cuu, khong bao dam trung thuong.")
+    print("\nResearch only. No guarantee of winning.")
 
 
 if __name__ == "__main__":
