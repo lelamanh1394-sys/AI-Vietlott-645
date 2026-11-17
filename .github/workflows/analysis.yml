@@ -25,5 +25,5 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Run AI V7
-        run: python main_v7.py
+      - name: Run AI V8
+        run: python main_v8.py
